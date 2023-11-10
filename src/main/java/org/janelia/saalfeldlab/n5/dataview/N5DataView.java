@@ -1,17 +1,21 @@
 package org.janelia.saalfeldlab.n5.dataview;
 
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonPrimitive;
+import bdv.util.BdvFunctions;
+import bdv.util.BdvHandlePanel;
+import bdv.util.BdvOptions;
+import bdv.util.BdvStackSource;
+import com.google.gson.*;
+import net.imglib2.cache.img.CachedCellImg;
 import net.thisptr.jackson.jq.internal.misc.Lists;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.fife.hex.swing.HexEditor;
 import org.janelia.saalfeldlab.n5.*;
+import org.janelia.saalfeldlab.n5.imglib2.N5Utils;
 import org.janelia.saalfeldlab.n5.universe.N5Factory;
 
 import javax.swing.*;
+import javax.swing.event.TreeSelectionEvent;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreePath;
@@ -30,10 +34,14 @@ import java.util.stream.Collectors;
 
 public class N5DataView extends JFrame {
 
+    public static final boolean DEBUG = false;
+
+    private String defaultPath = "/Users/rokickik/dev/ome-zarr-image-analysis-nextflow/data/xy_8bit__nuclei_PLK1_control.ome.zarr";
+
     private JTextField pathField;
     private DefaultTreeModel treeModel;
     private JTree tree;
-    private JPanel viewerPanel;
+    private JTabbedPane tabbedPane;
 
     N5DataView() {
         initUI();
@@ -42,7 +50,7 @@ public class N5DataView extends JFrame {
     private void initUI() {
 
         pathField = new JTextField(40);
-        pathField.setText("/Users/rokickik/dev/ome-zarr-image-analysis-nextflow/data/xy_8bit__nuclei_PLK1_control.ome.zarr");
+        pathField.setText(defaultPath);
 
         JButton openButton = new JButton("Open");
         openButton.addActionListener(new AbstractAction() {
@@ -68,43 +76,21 @@ public class N5DataView extends JFrame {
 
         contentPane.add(inputPanel, BorderLayout.NORTH);
 
-        DefaultMutableTreeNode root = new DefaultMutableTreeNode("");
+        // Start with an empty tree and hide the root node
+        DefaultMutableTreeNode root = new DefaultMutableTreeNode(null);
         treeModel = new DefaultTreeModel(root);
         tree = new JTree(treeModel);
         tree.setShowsRootHandles(true);
         tree.setRootVisible(false);
-
-        tree.getSelectionModel().addTreeSelectionListener(e -> {
-
-            DefaultMutableTreeNode node = (DefaultMutableTreeNode)tree.getLastSelectedPathComponent();
-            if (node == null) return;
-            viewerPanel.removeAll();
-            viewerPanel.updateUI();
-
-            TreeNode treeNode = (TreeNode)node.getUserObject();
-            Supplier<InputStream> contentSupplier = treeNode.getContentSupplier();
-            if (contentSupplier != null) {
-                InputStream inputStream = treeNode.getContentSupplier().get();
-                if (inputStream != null) {
-                    HexEditor hexEditor = new HexEditor();
-                    try {
-                        hexEditor.open(inputStream);
-                    } catch (IOException ex) {
-                        ex.printStackTrace();
-                    }
-                    viewerPanel.add(hexEditor);
-                }
-            }
-        });
+        tree.getSelectionModel().addTreeSelectionListener(this::handleTreeNodeSelected);
 
         JScrollPane treeScrollPane = new JScrollPane(tree);
         treeScrollPane.setMinimumSize(new Dimension(200,200));
 
-        viewerPanel = new JPanel();
-        viewerPanel.setLayout(new BorderLayout());
-        viewerPanel.setMinimumSize(new Dimension(200,200));
+        tabbedPane = new JTabbedPane();
+        tabbedPane.setMinimumSize(new Dimension(200,200));
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treeScrollPane, viewerPanel);
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treeScrollPane, tabbedPane);
         splitPane.setResizeWeight(0.3);
         splitPane.setOneTouchExpandable(true);
         splitPane.setContinuousLayout(true);
@@ -120,11 +106,12 @@ public class N5DataView extends JFrame {
     private void open(String pathStr) {
         Path path = Paths.get(pathStr);
         N5Factory n5Factory = new N5Factory()
+                .gsonBuilder(new GsonBuilder().setPrettyPrinting())
                 .zarrMapN5Attributes(false)
                 .zarrMergeAttributes(false);
         try (N5Reader reader = n5Factory.openReader(pathStr)) {
-            TreeNode treeNode = new TreeNode(path.getFileName().toString(), reader);
-            DefaultMutableTreeNode root = treeNode.create();
+            N5TreeNode n5TreeNode = new N5TreeNode(reader, "/", path.getFileName().toString());
+            DefaultMutableTreeNode root = n5TreeNode.wrap();
             addChildren(reader, root, "", "");
             addMetadata(reader, root, "");
             tree.setRootVisible(true);
@@ -135,7 +122,7 @@ public class N5DataView extends JFrame {
 
     private int addChildren(N5Reader reader, DefaultMutableTreeNode parentNode, String path, String indent) {
 
-        System.out.println(indent+"addChildren "+path);
+        if (DEBUG) System.out.println(indent+"addChildren "+path);
 
         List<String> childNames = Arrays.asList(reader.list(path));
         Collections.sort(childNames);
@@ -145,22 +132,22 @@ public class N5DataView extends JFrame {
 
             if (reader.datasetExists(childName)) {
 
-                TreeNode treeNode = new TreeNode(childName, null);
+                N5DataSetTreeNode n5TreeNode = new N5DataSetTreeNode(childPath, childName, reader);
 
-                DefaultMutableTreeNode childNode = treeNode.create();
+                DefaultMutableTreeNode childNode = n5TreeNode.wrap();
                 parentNode.add(childNode);
 
                 DatasetAttributes datasetAttributes = reader.getDatasetAttributes(childPath);
 
-                System.out.println(indent + " - " + childPath + " (data set) " + datasetAttributes);
+                if (DEBUG) System.out.println(indent + " - " + childPath + " (data set) " + datasetAttributes);
 
                 if (datasetAttributes != null) {
-                    addDataSetAttributeNodes(reader, childNode, datasetAttributes);
+                    addDataSetAttributeNodes(reader, childPath, childNode, datasetAttributes);
 
                     //int numChildren = addChildren(reader, childNode, childPath, context, indent + "  ");
                     addMetadata(reader, childNode, childPath);
 
-                    String contextRelativePath = childPath.replaceFirst(childPath, "") + "/0";
+                    String contextRelativePath = "/0/0/0/0/0";
 
                     // Convert context relative path to grid position
                     long[] gridPosition = ArrayUtils.toPrimitive(
@@ -169,24 +156,24 @@ public class N5DataView extends JFrame {
                                     .map(Long::parseLong)
                                     .toArray(Long[]::new));
 
-                    treeNode.setContentSupplier(() -> {
+                    n5TreeNode.setContentSupplier(() -> {
                         DataBlock<?> dataBlock = reader.readBlock(
                                 childPath, datasetAttributes, gridPosition);
                         String posStr = StringUtils.join(ArrayUtils.toObject(gridPosition), ",");
                         if (dataBlock == null) {
-                            System.out.println("No content at path=" + childPath + " pos=" + posStr);
+                            if (DEBUG) System.out.println("No content at path=" + childPath + " pos=" + posStr);
                         } else {
-                            System.out.println("Show content at path=" + childPath + " pos=" + posStr);
+                            if (DEBUG) System.out.println("Show content at path=" + childPath + " pos=" + posStr);
                         }
                         return dataBlock == null ? null : new ByteBufferBackedInputStream(dataBlock.toByteBuffer());
                     });
                 }
             }
             else {
-                System.out.println(indent+" - "+childPath+" (group)");
+                if (DEBUG) System.out.println(indent+" - "+childPath+" (group)");
 
-                TreeNode treeNode = new TreeNode(childName, null);
-                DefaultMutableTreeNode childNode = treeNode.create();
+                N5TreeNode n5TreeNode = new N5TreeNode(reader, childPath, childName);
+                DefaultMutableTreeNode childNode = n5TreeNode.wrap();
                 parentNode.add(childNode);
 
                 addChildren(reader, childNode, childPath, indent+"  ");
@@ -197,13 +184,13 @@ public class N5DataView extends JFrame {
         return childNames.size();
     }
 
-    private void addDataSetAttributeNodes(N5Reader reader, DefaultMutableTreeNode parentNode,
+    private void addDataSetAttributeNodes(N5Reader reader, String path, DefaultMutableTreeNode parentNode,
                                           DatasetAttributes datasetAttributes) {
 
         {
             DataType dataType = datasetAttributes.getDataType();
-            TreeNode treeNode = new TreeNode("Data type: " + dataType.toString(), null);
-            DefaultMutableTreeNode childNode = treeNode.create();
+            N5TreeNode n5TreeNode = new N5TreeNode(reader, path+"#dataType","Data type: " + dataType.toString());
+            DefaultMutableTreeNode childNode = n5TreeNode.wrap();
             parentNode.add(childNode);
         }
 
@@ -218,8 +205,8 @@ public class N5DataView extends JFrame {
             else {
                 compressionSb.append(compression.getType());
             }
-            TreeNode treeNode = new TreeNode(compressionSb.toString(), null);
-            DefaultMutableTreeNode childNode = treeNode.create();
+            N5TreeNode n5TreeNode = new N5TreeNode(reader, path+"#compression", compressionSb.toString());
+            DefaultMutableTreeNode childNode = n5TreeNode.wrap();
             parentNode.add(childNode);
         }
 
@@ -228,8 +215,8 @@ public class N5DataView extends JFrame {
             String dimensionsStr = Arrays.stream(dimensions)
                     .mapToObj(String::valueOf)
                     .collect(Collectors.joining(" x "));
-            TreeNode treeNode = new TreeNode("Dimensions: " + dimensionsStr, null);
-            DefaultMutableTreeNode childNode = treeNode.create();
+            N5TreeNode n5TreeNode = new N5TreeNode(reader,path+"#dimensions", "Dimensions: " + dimensionsStr);
+            DefaultMutableTreeNode childNode = n5TreeNode.wrap();
             parentNode.add(childNode);
         }
 
@@ -238,8 +225,8 @@ public class N5DataView extends JFrame {
             String blockSizeStr = Arrays.stream(blockSize)
                     .mapToObj(String::valueOf)
                     .collect(Collectors.joining(" x "));
-            TreeNode treeNode = new TreeNode("Block size: " + blockSizeStr, null);
-            DefaultMutableTreeNode childNode = treeNode.create();
+            N5TreeNode n5TreeNode = new N5TreeNode(reader, path+"#blockSize", "Block size: " + blockSizeStr);
+            DefaultMutableTreeNode childNode = n5TreeNode.wrap();
             parentNode.add(childNode);
         }
     }
@@ -266,7 +253,7 @@ public class N5DataView extends JFrame {
         }
     }
 
-    private String getPrimitives(JsonArray jsonArray) {
+    private String getPrimitiveCSV(JsonArray jsonArray) {
         StringBuilder builder = new StringBuilder();
         for (JsonElement childElement : jsonArray.asList()) {
             if (childElement.isJsonPrimitive()) {
@@ -282,15 +269,16 @@ public class N5DataView extends JFrame {
     }
     private void addMetadata(N5Reader reader, DefaultMutableTreeNode parentNode, String key, JsonElement jsonElement) {
 
+        N5TreeNode parentUserObject = (N5TreeNode)parentNode.getUserObject();
+
         if (jsonElement.isJsonArray()) {
-
             JsonArray jsonArray = jsonElement.getAsJsonArray();
-            String primitives = getPrimitives(jsonArray);
+            String primitiveCSV = getPrimitiveCSV(jsonArray);
 
-            if (primitives == null) {
-                // There are some non-primitive children
-                TreeNode treeNode = new TreeNode(key, jsonElement);
-                DefaultMutableTreeNode childNode = treeNode.create();
+            if (primitiveCSV == null) {
+                // There are some non-primitive children, so we need to show all the array members as nodes
+                N5TreeNode n5TreeNode = new N5MetadataTreeNode(reader, parentUserObject.getPath(), key, jsonArray);
+                DefaultMutableTreeNode childNode = n5TreeNode.wrap();
                 parentNode.add(childNode);
                 int i = 0;
                 for (JsonElement childElement : jsonArray.asList()) {
@@ -299,25 +287,44 @@ public class N5DataView extends JFrame {
                 }
             }
             else {
-                String label = String.format("%s = %s", key, primitives);
-                TreeNode treeNode = new TreeNode(label, jsonElement);
-                DefaultMutableTreeNode childNode = treeNode.create();
+                // Show all primitive members as a single node using CSV format
+                String label = String.format("%s = %s", key, primitiveCSV);
+                N5TreeNode n5TreeNode = new N5MetadataTreeNode(reader, parentUserObject.getPath(), label, jsonArray);
+                DefaultMutableTreeNode childNode = n5TreeNode.wrap();
                 parentNode.add(childNode);
             }
         }
         else if (jsonElement.isJsonObject()) {
             JsonObject childObject = jsonElement.getAsJsonObject();
-            TreeNode treeNode = new TreeNode(key, childObject);
-            DefaultMutableTreeNode childNode = treeNode.create();
+            N5TreeNode n5TreeNode = new N5MetadataTreeNode(reader, parentUserObject.getPath(), key, childObject);
+            DefaultMutableTreeNode childNode = n5TreeNode.wrap();
             parentNode.add(childNode);
             addMetadata(reader, childNode, childObject);
         }
         else if (jsonElement.isJsonPrimitive()) {
             JsonPrimitive jsonPrimitive = jsonElement.getAsJsonPrimitive();
             String nodeName = key == null ? jsonPrimitive.toString() : String.format("%s = %s", key, jsonPrimitive);
-            TreeNode treeNode = new TreeNode(nodeName, jsonPrimitive);
-            parentNode.add(treeNode.create());
+            N5TreeNode n5TreeNode = new N5MetadataTreeNode(reader, parentUserObject.getPath(), nodeName, jsonElement);
+            parentNode.add(n5TreeNode.wrap());
         }
+    }
+
+    private void handleTreeNodeSelected(TreeSelectionEvent e) {
+
+        DefaultMutableTreeNode node = (DefaultMutableTreeNode) tree.getLastSelectedPathComponent();
+        if (node == null) return;
+
+        // Remove all current tabs
+        tabbedPane.removeAll();;
+
+        // Repopulate with new tabs
+        N5TreeNode n5TreeNode = (N5TreeNode) node.getUserObject();
+        for (EditorTab editorTab : n5TreeNode.getEditorTabs()) {
+            tabbedPane.addTab(editorTab.getTitle(), editorTab.getIcon(),
+                    editorTab.getComponent(), editorTab.getTip());
+        }
+
+        tabbedPane.updateUI();
     }
 
     // From https://www.logicbig.com/tutorials/java-swing/jtree-expand-collapse-all-nodes.html
@@ -342,28 +349,51 @@ public class N5DataView extends JFrame {
         }
     }
 
-    private class TreeNode {
+    private class N5TreeNode {
 
-        private String label;
-        private Object object;
-        private Supplier<InputStream> contentSupplier;
+        protected final String label;
+        protected final String path;
+        protected final N5Reader reader;
 
-        public TreeNode(String label, Object object) {
+
+        public N5TreeNode(N5Reader reader, String path, String label) {
+            this.reader = reader;
+            this.path = path;
             this.label = label;
-            this.object = object;
-        }
-        public TreeNode(String label, Object object, Supplier<InputStream> contentSupplier) {
-            this.label = label;
-            this.object = object;
-            this.contentSupplier = contentSupplier;
         }
 
         public String getLabel() {
             return label;
         }
 
-        public Object getObject() {
-            return object;
+        public N5Reader getReader() {
+            return reader;
+        }
+
+        public String getPath() {
+            return path;
+        }
+
+        public List<EditorTab> getEditorTabs() {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
+
+        public DefaultMutableTreeNode wrap() {
+            return new DefaultMutableTreeNode(this);
+        }
+    }
+
+    private class N5DataSetTreeNode extends N5TreeNode {
+
+        private Supplier<InputStream> contentSupplier;
+
+        public N5DataSetTreeNode(String path, String label, N5Reader reader) {
+            super(reader, path ,label);
         }
 
         public Supplier<InputStream> getContentSupplier() {
@@ -374,16 +404,98 @@ public class N5DataView extends JFrame {
             this.contentSupplier = contentSupplier;
         }
 
-        @Override
-        public String toString() {
-            return label;
-        }
+        public List<EditorTab> getEditorTabs() {
 
-        private DefaultMutableTreeNode create() {
-            return new DefaultMutableTreeNode(this);
+            List<EditorTab> viewers = new ArrayList<>();
+
+            Supplier<InputStream> contentSupplier = getContentSupplier();
+            if (contentSupplier != null) {
+                InputStream inputStream = contentSupplier.get();
+                if (inputStream != null) {
+                    try {
+                        HexEditor hexEditor = new HexEditor();
+                        hexEditor.open(inputStream);
+                        viewers.add(new EditorTab(
+                                "Hex Editor",
+                                "Show the content in hex",
+                                hexEditor));
+                    } catch (IOException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                }
+
+                BdvOptions options = BdvOptions.options().frameTitle("N5 Viewer");
+                BdvHandlePanel bdvHandle = new BdvHandlePanel(N5DataView.this, options);
+                CachedCellImg<?, ?> ts = N5Utils.openVolatile(getReader(), getPath());
+                // We use the addTo option so as to not trigger a new window being opened
+                BdvStackSource<?> show = BdvFunctions.show(ts, getPath(), BdvOptions.options().addTo(bdvHandle));
+                viewers.add(new EditorTab(
+                        "BigDataViewer",
+                        "Displays the data set in a BDV",
+                        show.getBdvHandle().getViewerPanel()));
+            }
+
+            return viewers;
         }
     }
 
+    private class N5MetadataTreeNode extends N5TreeNode {
+
+        private JsonElement jsonElement;
+
+        public N5MetadataTreeNode(N5Reader reader, String path, String label, JsonElement jsonElement) {
+            super(reader, path, label);
+            this.jsonElement = jsonElement;
+        }
+
+        public List<EditorTab> getEditorTabs() {
+            if (reader instanceof GsonN5Reader) {
+                GsonN5Reader gsonN5Reader = (GsonN5Reader) reader;
+                String jsonText = gsonN5Reader.getGson().toJson(jsonElement);
+                JTextArea textArea = new JTextArea();
+                textArea.setEditable(false);
+                textArea.setText(jsonText);
+                JScrollPane scrollPane = new JScrollPane(textArea);
+                return Collections.singletonList(new EditorTab("JSON", "Displays the object as JSON", scrollPane));
+            }
+
+            return Collections.emptyList();
+        }
+    }
+
+    private class EditorTab {
+
+        private final String title;
+        private final String tip;
+        private final Icon icon;
+        private final JComponent component;
+
+        public EditorTab(String title, String tip, JComponent component) {
+            this(title, tip, null, component);
+        }
+        public EditorTab(String title, String tip, Icon icon, JComponent component) {
+            this.title = title;
+            this.tip = tip;
+            this.icon = icon;
+            this.component = component;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public String getTip() {
+            return tip;
+        }
+
+        public Icon getIcon() {
+            return icon;
+        }
+
+        public JComponent getComponent() {
+            return component;
+        }
+    }
 
     public static void main(String[] args) {
         EventQueue.invokeLater(() -> {
