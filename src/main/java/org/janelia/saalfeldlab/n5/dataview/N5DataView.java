@@ -15,6 +15,8 @@ import org.janelia.saalfeldlab.n5.imglib2.N5Utils;
 import org.janelia.saalfeldlab.n5.universe.N5Factory;
 
 import javax.swing.*;
+import javax.swing.event.ChangeEvent;
+import javax.swing.event.ChangeListener;
 import javax.swing.event.TreeSelectionEvent;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
@@ -32,6 +34,13 @@ import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+/**
+ * A viewer for inspecting details of N5-compatible containers including OME-Zarr, HDF5, and N5.
+ *
+ * Inspired by the "HDF View".
+ *
+ * @author Konrad Rokicki
+ */
 public class N5DataView extends JFrame {
 
     public static final boolean DEBUG = false;
@@ -131,42 +140,30 @@ public class N5DataView extends JFrame {
             String childPath = path+"/"+childName;
 
             if (reader.datasetExists(childName)) {
-
-                N5DataSetTreeNode n5TreeNode = new N5DataSetTreeNode(childPath, childName, reader);
-
-                DefaultMutableTreeNode childNode = n5TreeNode.wrap();
-                parentNode.add(childNode);
-
                 DatasetAttributes datasetAttributes = reader.getDatasetAttributes(childPath);
-
                 if (DEBUG) System.out.println(indent + " - " + childPath + " (data set) " + datasetAttributes);
 
                 if (datasetAttributes != null) {
-                    addDataSetAttributeNodes(reader, childPath, childNode, datasetAttributes);
-
-                    //int numChildren = addChildren(reader, childNode, childPath, context, indent + "  ");
-                    addMetadata(reader, childNode, childPath);
-
-                    String contextRelativePath = "/0/0/0/0/0";
-
-                    // Convert context relative path to grid position
-                    long[] gridPosition = ArrayUtils.toPrimitive(
-                            Arrays.stream(contextRelativePath.split("/"))
-                                    .filter(StringUtils::isNotBlank)
-                                    .map(Long::parseLong)
-                                    .toArray(Long[]::new));
-
-                    n5TreeNode.setContentSupplier(() -> {
-                        DataBlock<?> dataBlock = reader.readBlock(
-                                childPath, datasetAttributes, gridPosition);
-                        String posStr = StringUtils.join(ArrayUtils.toObject(gridPosition), ",");
-                        if (dataBlock == null) {
-                            if (DEBUG) System.out.println("No content at path=" + childPath + " pos=" + posStr);
-                        } else {
-                            if (DEBUG) System.out.println("Show content at path=" + childPath + " pos=" + posStr);
+                    N5DataSetTreeNode n5TreeNode = new N5DataSetTreeNode(childPath, childName, reader, datasetAttributes) {
+                        public InputStream getInputStream(long[] gridPosition) {
+                            DataBlock<?> dataBlock = reader.readBlock(
+                                    childPath, datasetAttributes, gridPosition);
+                            String posStr = StringUtils.join(ArrayUtils.toObject(gridPosition), ",");
+                            if (dataBlock == null) {
+                                if (DEBUG) System.out.println("No content at path=" + childPath + " pos=" + posStr);
+                            } else {
+                                if (DEBUG) System.out.println("Show content at path=" + childPath + " pos=" + posStr);
+                            }
+                            return dataBlock == null ? null : new ByteBufferBackedInputStream(dataBlock.toByteBuffer());
                         }
-                        return dataBlock == null ? null : new ByteBufferBackedInputStream(dataBlock.toByteBuffer());
-                    });
+                    };
+                    DefaultMutableTreeNode childNode = n5TreeNode.wrap();
+                    parentNode.add(childNode);
+                    addDataSetAttributeNodes(reader, childPath, childNode, datasetAttributes);
+                    addMetadata(reader, childNode, childPath);
+                }
+                else {
+                    throw new IllegalStateException("Data set without attributes: "+childPath);
                 }
             }
             else {
@@ -391,38 +388,79 @@ public class N5DataView extends JFrame {
     private class N5DataSetTreeNode extends N5TreeNode {
 
         private Supplier<InputStream> contentSupplier;
+        private DatasetAttributes datasetAttributes;
 
-        public N5DataSetTreeNode(String path, String label, N5Reader reader) {
+        public N5DataSetTreeNode(String path, String label, N5Reader reader, DatasetAttributes datasetAttributes) {
             super(reader, path ,label);
+            this.datasetAttributes = datasetAttributes;
         }
 
-        public Supplier<InputStream> getContentSupplier() {
-            return contentSupplier;
+
+        public InputStream getInputStream(long[] gridPosition) {
+            return null;
         }
 
-        public void setContentSupplier(Supplier<InputStream> contentSupplier) {
-            this.contentSupplier = contentSupplier;
-        }
 
         public List<EditorTab> getEditorTabs() {
 
             List<EditorTab> viewers = new ArrayList<>();
 
-            Supplier<InputStream> contentSupplier = getContentSupplier();
-            if (contentSupplier != null) {
-                InputStream inputStream = contentSupplier.get();
-                if (inputStream != null) {
-                    try {
-                        HexEditor hexEditor = new HexEditor();
-                        hexEditor.open(inputStream);
-                        viewers.add(new EditorTab(
-                                "Hex Editor",
-                                "Show the content in hex",
-                                hexEditor));
-                    } catch (IOException ex) {
-                        throw new RuntimeException(ex);
-                    }
+            try {
+                // Initialize grid positions
+                int numDimensions = datasetAttributes.getNumDimensions();
+                long[] initialGridPosition = new long[numDimensions];
+                for (int i = 0; i < numDimensions; i++) {
+                    initialGridPosition[i] = 0;
                 }
+
+                // Create hex editor
+                JPanel hexEditorControllerPanel = new JPanel();
+                hexEditorControllerPanel.setLayout(new BoxLayout(hexEditorControllerPanel, BoxLayout.LINE_AXIS));
+                JPanel hexEditorPanel = new JPanel();
+                hexEditorPanel.setLayout(new BorderLayout());
+                hexEditorPanel.add(hexEditorControllerPanel, BorderLayout.NORTH);
+
+                HexEditor hexEditor = new HexEditor();
+                InputStream inputStream = getInputStream(initialGridPosition);
+                if (inputStream != null) {
+                    hexEditor.open(inputStream);
+                }
+                hexEditorPanel.add(hexEditor, BorderLayout.CENTER);
+
+                // Create a spinner control for each dimension
+                SpinnerNumberModel[] models = new SpinnerNumberModel[numDimensions];
+                for (int i = 0; i < numDimensions; i++) {
+                    long dimension = datasetAttributes.getDimensions()[i];
+                    int blockSize = datasetAttributes.getBlockSize()[i];
+                    long numBlocks = dimension / blockSize;
+                    SpinnerNumberModel blockModel = new SpinnerNumberModel(0, 0, numBlocks-1, 1);
+                    models[i] = blockModel;
+                    JSpinner spinner = new JSpinner(blockModel);
+                    spinner.addChangeListener(e -> {
+                        long[] gridPosition = new long[numDimensions];
+                        for (int j = 0; j < numDimensions; j++) {
+                            Double value = (Double) models[j].getValue();
+                            gridPosition[j] = value.longValue();
+                        }
+                        SwingUtilities.invokeLater(() -> {
+                            try {
+                                InputStream inputStream2 = getInputStream(gridPosition);
+                                if (inputStream2 != null) {
+                                    hexEditor.open(inputStream2);
+                                    hexEditor.updateUI();
+                                }
+                            } catch (IOException ex) {
+                                throw new RuntimeException(ex);
+                            }
+                        });
+                    });
+                    hexEditorControllerPanel.add(spinner);
+                }
+
+                viewers.add(new EditorTab(
+                        "Hex Editor",
+                        "Show the content in hex",
+                        hexEditorPanel));
 
                 BdvOptions options = BdvOptions.options().frameTitle("N5 Viewer");
                 BdvHandlePanel bdvHandle = new BdvHandlePanel(N5DataView.this, options);
@@ -433,6 +471,10 @@ public class N5DataView extends JFrame {
                         "BigDataViewer",
                         "Displays the data set in a BDV",
                         show.getBdvHandle().getViewerPanel()));
+
+            }
+            catch (Exception ex) {
+                throw new RuntimeException(ex);
             }
 
             return viewers;
