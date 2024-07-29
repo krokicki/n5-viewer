@@ -33,7 +33,9 @@ import org.janelia.saalfeldlab.n5.universe.N5TreeNode;
 import org.janelia.saalfeldlab.n5.universe.metadata.N5CosemMetadata;
 import org.janelia.saalfeldlab.n5.universe.metadata.N5DatasetMetadata;
 import org.janelia.saalfeldlab.n5.universe.metadata.N5SingleScaleMetadata;
+import org.janelia.saalfeldlab.n5.universe.metadata.N5SpatialDatasetMetadata;
 import org.janelia.saalfeldlab.n5.universe.metadata.SpatialMetadata;
+import org.janelia.saalfeldlab.n5.universe.metadata.axes.Axis;
 import org.janelia.saalfeldlab.n5.universe.metadata.axes.AxisMetadata;
 import org.janelia.saalfeldlab.n5.universe.metadata.axes.AxisSlicer;
 import org.janelia.saalfeldlab.n5.universe.metadata.axes.AxisUtils;
@@ -89,11 +91,6 @@ public class MetadataSource<T extends NumericType<T> & NativeType<T>> implements
 
 		this.channelDimension = channelDim;
 		this.channelPos = channelPos;
-
-//		if( metadata instanceof AxisMetadata )
-//			inferDimensions((AxisMetadata) metadata, channelDim );
-//		else
-//			inferDimensions( defaultAxes( metadata ), channelDim );
 
 		if (metadata instanceof AxisMetadata)
 			axes = (AxisMetadata)metadata;
@@ -258,11 +255,11 @@ public class MetadataSource<T extends NumericType<T> & NativeType<T>> implements
 
 		for (int i = 0; i < nd; i++) {
 			final String type = axes.getAxisTypes()[i];
-			if (type.equals("space"))
+			if (type.equals(Axis.SPACE))
 				nSpaceDims++;
-			else if (type.equals("time"))
+			else if (type.equals(Axis.TIME))
 				nTimeDims++;
-			else if (type.equals("channel"))
+			else if (type.equals(Axis.CHANNEL))
 				nChannelDims++;
 			else
 				nOtherDims++;
@@ -281,10 +278,15 @@ public class MetadataSource<T extends NumericType<T> & NativeType<T>> implements
 	 * Up to three space dimensions are allowed. One time dimension is allowed.
 	 * One channel dimension is allowed.
 	 *
+	 * Deprecated: use AxisMetadata directly instead.
+	 *
 	 * @param axes
 	 *            axis metadata
+	 * @param channel
+	 *            index of the channel dimension
 	 * @return are the axes valid, constrained as described above.
 	 */
+	@Deprecated
 	public boolean inferDimensions(final AxisMetadata axes, final int channel) {
 
 		final ArrayList<Integer> spaceDims = new ArrayList<>();
@@ -295,9 +297,9 @@ public class MetadataSource<T extends NumericType<T> & NativeType<T>> implements
 		final int nd = axes.getAxisLabels().length;
 		for (int i = 0; i < nd; i++) {
 			final String type = axes.getAxisTypes()[i];
-			if (type.equals("space"))
+			if (type.equals(Axis.SPACE))
 				spaceDims.add(i);
-			else if (type.equals("time"))
+			else if (type.equals(Axis.TIME))
 				timeDims.add(i);
 			else
 				channelDims.add(i);
@@ -347,11 +349,11 @@ public class MetadataSource<T extends NumericType<T> & NativeType<T>> implements
 			final String type = axes.getAxisTypes()[i];
 			final String label = axes.getAxisLabels()[i];
 
-			if (type.equals("space"))
+			if (type.equals(Axis.SPACE))
 				continue;
-			else if (type.equals("time"))
+			else if (type.equals(Axis.TIME))
 				slicer.slice(label, t);
-			else if (type.equals("channel"))
+			else if (type.equals(Axis.CHANNEL))
 				slicer.slice(label, channelPos);
 			else
 				slicer.slice(label, 0);

@@ -7,6 +7,8 @@ import java.util.function.Consumer;
 
 import org.janelia.saalfeldlab.n5.ij.N5Importer;
 import org.janelia.saalfeldlab.n5.metadata.N5ViewerMultichannelMetadata;
+import org.janelia.saalfeldlab.n5.metadata.imagej.ImagePlusLegacyMetadataParser;
+import org.janelia.saalfeldlab.n5.ui.DataSelection;
 import org.janelia.saalfeldlab.n5.ui.DatasetSelectorDialog;
 import org.janelia.saalfeldlab.n5.universe.metadata.N5CosemMetadataParser;
 import org.janelia.saalfeldlab.n5.universe.metadata.N5CosemMultiScaleMetadata;
@@ -15,6 +17,7 @@ import org.janelia.saalfeldlab.n5.universe.metadata.N5MetadataParser;
 import org.janelia.saalfeldlab.n5.universe.metadata.N5SingleScaleMetadataParser;
 import org.janelia.saalfeldlab.n5.universe.metadata.N5ViewerMultiscaleMetadataParser;
 import org.janelia.saalfeldlab.n5.universe.metadata.canonical.CanonicalMetadataParser;
+import org.janelia.saalfeldlab.n5.universe.metadata.ome.ngff.v04.OmeNgffMetadataParser;
 
 import ij.ImageJ;
 
@@ -30,15 +33,17 @@ import ij.ImageJ;
 public class N5ViewerCreator {
 
 	public static final N5MetadataParser<?>[] n5vGroupParsers = new N5MetadataParser[]{
-			new org.janelia.saalfeldlab.n5.universe.metadata.ome.ngff.v04.OmeNgffMetadataParser(),
-//    		new org.janelia.saalfeldlab.n5.universe.metadata.ome.ngff.v03.OmeNgffMetadataParser(), // TODO test later
+			new OmeNgffMetadataParser(),
 			new N5CosemMultiScaleMetadata.CosemMultiScaleParser(),
 			new N5ViewerMultiscaleMetadataParser(),
 			new CanonicalMetadataParser(),
-			new N5ViewerMultichannelMetadata.N5ViewerMultichannelMetadataParser()
+			new N5ViewerMultichannelMetadata.N5ViewerMultichannelMetadataParser(),
+			new N5ViewerMultichannelMetadata.GenericMultichannelMetadataParser()
+
 	};
 
 	public static final N5MetadataParser<?>[] n5vParsers = new N5MetadataParser[]{
+			new ImagePlusLegacyMetadataParser(),
 			new N5CosemMetadataParser(),
 			new N5SingleScaleMetadataParser(),
 			new CanonicalMetadataParser(),
@@ -82,23 +87,49 @@ public class N5ViewerCreator {
 			final Consumer<Exception> exceptionHandler,
 			final Consumer<N5Viewer> viewerConsumer) {
 
+		openViewer( exceptionHandler, viewerConsumer, null, null );
+	}
+
+	/**
+	 * Display a data selection dialog, and open a viewer with the selected
+	 * data.
+	 *
+	 * @param exceptionHandler
+	 *            handler for any exceptions throw once the data has been
+	 *            selected
+	 * @param viewerConsumer
+	 *            consumer for the viewer that is created once the data has been
+	 *            selected
+	 * @param selectionConsumer
+	 *            consumer for the data selected in the dialog
+	 * @param cancelConsumer
+	 *            consumer to be executed if the dialog is cancelled.
+	 */
+	public void openViewer(
+			final Consumer<Exception> exceptionHandler,
+			final Consumer<N5Viewer> viewerConsumer,
+			final Consumer<DataSelection> selectionConsumer,
+			final Consumer<Void> cancelConsumer) {
+
 		final ExecutorService exec = Executors.newFixedThreadPool(ij.Prefs.getThreads());
 		final DatasetSelectorDialog dialog = new DatasetSelectorDialog(
 				new N5Importer.N5ViewerReaderFun(),
-				x -> "",
+				new N5Importer.N5BasePathFun(),
 				lastOpenedContainer,
 				n5vGroupParsers,
 				n5vParsers);
 
 		dialog.setLoaderExecutor(exec);
-
-//		dialog.setRecursiveFilterCallback( new N5ViewerDatasetFilter() );
 		dialog.setContainerPathUpdateCallback(x -> lastOpenedContainer = x);
 		dialog.setTreeRenderer(new N5ViewerTreeCellRenderer(false));
+		dialog.setCancelCallback(cancelConsumer);
 
 		dialog.run(selection -> {
 			try {
 				final N5Viewer n5Viewer = new N5Viewer(null, selection, true);
+				if (selectionConsumer != null) {
+					selectionConsumer.accept(selection);
+				}
 				if (viewerConsumer != null) {
 					viewerConsumer.accept(n5Viewer);
 				}

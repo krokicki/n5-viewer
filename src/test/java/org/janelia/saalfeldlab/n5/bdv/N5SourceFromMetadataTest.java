@@ -29,6 +29,7 @@ import static org.junit.Assert.fail;
 import java.io.IOException;
 import java.util.Optional;
 
+import org.janelia.saalfeldlab.n5.DatasetAttributes;
 import org.janelia.saalfeldlab.n5.N5FSWriter;
 import org.janelia.saalfeldlab.n5.RawCompression;
 import org.janelia.saalfeldlab.n5.imglib2.N5Utils;
@@ -72,6 +73,7 @@ public class N5SourceFromMetadataTest {
 			// write 6d
 			final String dataset6d = testBaseDatasetName + "/img6d";
 			N5Utils.save(img6d, n5, dataset6d, new int[]{17, 17, 17, 17, 17, 17}, new RawCompression());
+			final DatasetAttributes dsetAttrs = n5.getDatasetAttributes(dataset6d);
 
 			// cosem
 			final String datasetCosem = testBaseDatasetName + "/cosem";
@@ -82,7 +84,7 @@ public class N5SourceFromMetadataTest {
 							new double[]{2, 3, 4},
 							new double[]{-1, -2, -3},
 							new String[]{"um", "um", "um"}),
-					null);
+					dsetAttrs);
 			final N5CosemMetadataParser pcosem = new N5CosemMetadataParser();
 
 			N5Utils.save(img, n5, datasetCosem, new int[]{7, 7, 7}, new RawCompression());
@@ -121,10 +123,13 @@ public class N5SourceFromMetadataTest {
 		final int nt3 = 1;
 
 		final String xlationBase = "include \"n5\";\n"
+				+ "def genAxes( $lbls; $unit ): axesFromLabels( $lbls ;\"mm\") | "
+				+ "map(. += {\"name\":.label} | del(.label));\n"
+				+ "\n"
 				+ "def setMeta: identityAsFlatAffine(6) as $id | \n"
 				+ " . + arrayUnitAxisToTransform( $id;\n"
 				+ "	     \"mm\"; \n"
-				+ "	     axesFromLabels( %s ;\"mm\"));\n"
+				+ "	     genAxes( %s ;\"mm\"));\n"
 				+ "addPaths | getSubTree(\"%s\") |= (.attributes |= setMeta)";
 
 		checkTranslatedSizes(String.format(xlationBase, axisOrder1, dataset), dataset, nt1, sz1, "1");
