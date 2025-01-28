@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>BigDataViewerWeb</title>
+<!--<script src="https://cjrtnc.leaningtech.com/3.0/cj3loader.js"></script>-->
+<script src="https://cjrtnc.leaningtech.com/3_20250128_587/cj3loader.js"></script>
+<style>
+#screen {
+    width: 95vw;
+    height: 95vh;
+    background-color: #ddd;
+}
+</style>
+</head>
+<body>
+    <div id="screen">
+    </div>
+    <script>
+        (async function () {
+            const response = await fetch('/authConfig.json');
+            const config = await response.json();
+
+            await cheerpjInit({
+                clipboardMode: "system",
+                javaProperties: [
+                    "javax.net.debug=ssl",
+                ],
+                tailscaleAuthKey: config.tailscaleAuthKey,
+                tailscaleDnsUrl: "1.1.1.1"
+            });
+            cheerpjCreateDisplay(-1, -1, document.getElementById('screen'));
+            await cheerpjRunJar("/app/target/n5-viewer_fiji-6.1.3-SNAPSHOT.jar");
+        })();
+    </script>
+</body>
+</html>
