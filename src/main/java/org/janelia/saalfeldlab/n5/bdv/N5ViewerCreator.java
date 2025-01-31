@@ -54,8 +54,8 @@ public class N5ViewerCreator {
 
 	final public static void main(final String... args) {
 
-//		new ImageJ();
-//		ij.Prefs.setThreads(6);
+		new ImageJ();
+		ij.Prefs.setThreads(6);
 		new N5ViewerCreator().openViewer(Throwable::printStackTrace);
 	}
 
